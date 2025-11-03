@@ -133,8 +133,8 @@
   function onFiles(list){
     const arr = Array.from(list||[]);
     arr.forEach(f=>{
-      const isVid = /^video\//.test(f.type);
-      const isImg = /^image\//.test(f.type);
+      const isVid = /^video\/.test(f.type);
+      const isImg = /^image\/.test(f.type);
       if(!isVid && !isImg) return;
       assets.push({ name:f.name, file:f, type:isVid?'video':'image' });
     });
@@ -171,7 +171,7 @@
     let listTxt = '';
     let estDuration = 0;
 
-    for(let i=0;i<assets.length;i++){
+    for(let i=0;i<assets.length;i++){  
       const a = assets[i];
       const inName = `in_${i}.${a.type==='image'?'png':'mp4'}`;
       statusEl.textContent = `Loading ${a.name}…`;
