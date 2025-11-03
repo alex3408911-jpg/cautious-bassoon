@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Zero‑Edit Stitcher — HTML</title>
+  <style>
+    body{margin:0;background:#000;color:#fff;font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+    .wrap{max-width:1100px;margin:0 auto;padding:24px}
+    h1{font-size:22px;margin:0 0 12px}
+    .grid{display:grid;gap:16px;grid-template-columns:1fr;}
+    @media(min-width:900px){.grid{grid-template-columns:2fr 1fr}}
+    .card{background:#0f0f0f;border:1px solid #222;border-radius:14px;padding:16px}
+    .btn{background:#D4AF37;color:#000;border:0;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer}
+    .btn[disabled]{opacity:.4;cursor:not-allowed}
+    .muted{opacity:.7;font-size:12px}
+    .timeline li{display:flex;align-items:center;gap:8px;background:#111;border:1px solid #222;border-radius:10px;padding:8px;margin:6px 0}
+    .tag{font-size:10px;background:#1b1b1b;padding:2px 6px;border-radius:6px}
+    .drop{border:2px dashed #333;border-radius:12px;padding:16px;text-align:center}
+    input,select,textarea{background:#101010;color:#fff;border:1px solid #222;border-radius:10px;padding:10px}
+    textarea{width:100%;height:140px}
+    video{width:100%;border-radius:12px}
+    a.dl{color:#D4AF37}
+  </style>
+  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.6/dist/ffmpeg.min.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <header style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px">
+      <h1>Zero‑Edit Stitcher — HTML</h1>
+      <div id="ffstate" class="muted">loading ffmpeg…</div>
+    </header>
+
+    <div class="grid">
+      <section class="card">
+        <div class="drop" id="drop">
+          <div>Drop images/videos here</div>
+          <div class="muted" style="margin:6px 0">or choose files</div>
+          <input id="pick" type="file" multiple accept="image/*,video/*" />
+        </div>
+
+        <div style="margin-top:12px;display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
+          <div>
+            <div class="muted">Voiceover (MP3/WAV)</div>
+            <input id="audio" type="file" accept="audio/*" />
+          </div>
+          <div>
+            <div class="muted">Filter</div>
+            <select id="filter">
+              <option value="color">Color</option>
+              <option value="bw">Black & White</option>
+            </select>
+          </div>
+          <div>
+            <div class="muted">FPS</div>
+            <input id="fps" type="number" value="30" />
+          </div>
+        </div>
+
+        <div style="margin-top:12px;display:grid;grid-template-columns:1fr 200px;gap:12px">
+          <div>
+            <div class="muted">Script for captions (optional)</div>
+            <textarea id="script" placeholder="Paste your script here to auto‑generate captions by sentence."></textarea>
+          </div>
+          <div>
+            <div class="muted">Image duration (seconds)</div>
+            <input id="imgdur" type="number" value="3" />
+            <div style="height:8px"></div>
+            <button id="render" class="btn" disabled>Render MP4</button>
+            <div style="height:8px"></div>
+            <div id="status" class="muted">Idle</div>
+          </div>
+        </div>
+
+        <div id="out" style="margin-top:12px"></div>
+      </section>
+
+      <aside class="card">
+        <h3 style="margin:0 0 8px">Timeline</h3>
+        <ul id="timeline" class="timeline"></ul>
+        <div class="muted" style="margin-top:8px">
+          Tips:
+          <ul>
+            <li>Prefer short clips. Keep total length ≤ 2–3 minutes per render.</li>
+            <li>Images convert to fixed‑length video segments.</li>
+            <li>Black & White uses <code>format=gray</code>.</li>
+            <li>Captions export as .vtt sidecar. Burn‑in possible on request.</li>
+          </ul>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+<script>
+(async function(){
+  const { createFFmpeg, fetchFile } = FFmpeg;
+  const ffmpeg = createFFmpeg({ log: true, corePath: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/ffmpeg-core.js' });
+  await ffmpeg.load();
+  document.getElementById('ffstate').textContent = 'ffmpeg ready';
+
+  const pick = document.getElementById('pick');
+  const drop = document.getElementById('drop');
+  const audioEl = document.getElementById('audio');
+  const filterEl = document.getElementById('filter');
+  const fpsEl = document.getElementById('fps');
+  const imgdurEl = document.getElementById('imgdur');
+  const scriptEl = document.getElementById('script');
+  const renderBtn = document.getElementById('render');
+  const statusEl = document.getElementById('status');
+  const tlEl = document.getElementById('timeline');
+  const outEl = document.getElementById('out');
+
+  let assets = []; // {name, file, type}
+  let audioFile = null;
+
+  function refreshUI(){
+    renderBtn.disabled = assets.length === 0;
+    tlEl.innerHTML = '';
+    assets.forEach((a, i) => {
+      const li = document.createElement('li');
+      const idx = document.createElement('span'); idx.textContent = String(i+1); idx.style.width='20px'; idx.className='muted';
+      const name = document.createElement('span'); name.textContent = a.name; name.style.flex='1'; name.style.overflow='hidden'; name.style.textOverflow='ellipsis'; name.style.whiteSpace='nowrap';
+      const tag = document.createElement('span'); tag.className='tag'; tag.textContent = a.type;
+      const up = document.createElement('button'); up.textContent='↑'; up.className='btn'; up.style.padding='4px 8px'; up.onclick=()=>{move(i,-1)};
+      const dn = document.createElement('button'); dn.textContent='↓'; dn.className='btn'; dn.style.padding='4px 8px'; dn.onclick=()=>{move(i,1)};
+      const rm = document.createElement('button'); rm.textContent='✕'; rm.style.background='#c0392b'; rm.className='btn'; rm.style.padding='4px 8px'; rm.onclick=()=>{removeAt(i)};
+      li.append(idx,name,tag,up,dn,rm); tlEl.append(li);
+    });
+  }
+  function move(i,dir){ const j=i+dir; if(j<0||j>=assets.length) return; const t=assets[i]; assets[i]=assets[j]; assets[j]=t; refreshUI(); }
+  function removeAt(i){ assets = assets.filter((_,k)=>k!==i); refreshUI(); }
+
+  function onFiles(list){
+    const arr = Array.from(list||[]);
+    arr.forEach(f=>{
+      const isVid = /^video\//.test(f.type);
+      const isImg = /^image\//.test(f.type);
+      if(!isVid && !isImg) return;
+      assets.push({ name:f.name, file:f, type:isVid?'video':'image' });
+    });
+    refreshUI();
+  }
+
+  pick.addEventListener('change', e=> onFiles(e.target.files));
+  ['dragenter','dragover'].forEach(type=> drop.addEventListener(type, e=>{e.preventDefault(); e.stopPropagation();}));
+  drop.addEventListener('drop', e=>{ e.preventDefault(); onFiles(e.dataTransfer.files) });
+
+  audioEl.addEventListener('change', e=>{ audioFile = e.target.files && e.target.files[0] ? e.target.files[0] : null; });
+
+  function toTime(s){
+    const hh = Math.floor(s/3600), mm=Math.floor((s%3600)/60), ss=Math.floor(s%60), ms=Math.floor((s%1)*1000);
+    const pad=(x,l=2)=>String(x).padStart(l,'0');
+    return `${pad(hh)}:${pad(mm)}:${pad(ss)}.${String(ms).padStart(3,'0')}`;
+  }
+  function vttFromScript(text,total){
+    const lines = text.split(/(?<=[.!?])\s+/).map(s=>s.trim()).filter(Boolean);
+    const n = Math.max(lines.length,1); const chunk = total/n; let t=0; let out='WEBVTT\n\n';
+    for(let i=0;i<n;i++){ const start=t, end=i===n-1?total:t+chunk; out+=`${i+1}\n${toTime(start)} --> ${toTime(end)}\n${lines[i]||''}\n\n`; t=end; }
+    return out;
+  }
+
+  async function render(){
+    outEl.innerHTML = '';
+    statusEl.textContent = 'Preparing…';
+
+    const fps = parseInt(fpsEl.value||'30');
+    const imgDur = parseFloat(imgdurEl.value||'3');
+    const useBW = filterEl.value === 'bw';
+
+    // write inputs
+    let listTxt = '';
+    let estDuration = 0;
+
+    for(let i=0;i<assets.length;i++){
+      const a = assets[i];
+      const inName = `in_${i}.${a.type==='image'?'png':'mp4'}`;
+      statusEl.textContent = `Loading ${a.name}…`;
+      ffmpeg.FS('writeFile', inName, await fetchFile(a.file));
+
+      if(a.type==='image'){
+        const vid = `img_${i}.mp4`;
+        statusEl.textContent = `Encoding image ${i+1}/${assets.length}`;
+        const vf = useBW ? 'format=gray' : 'null';
+        await ffmpeg.run('-loop','1','-framerate',String(fps),'-t',String(imgDur),'-i',inName,'-vf',vf,'-c:v','libx264','-pix_fmt','yuv420p',vid);
+        listTxt += `file ${vid}\n`;
+        estDuration += imgDur;
+      } else {
+        const vid = `vid_${i}.mp4`;
+        statusEl.textContent = `Transcoding clip ${i+1}/${assets.length}`;
+        const args = ['-i',inName];
+        if(useBW){ args.push('-vf','format=gray'); }
+        args.push('-c:v','libx264','-preset','veryfast','-r',String(fps),'-c:a','aac',vid);
+        await ffmpeg.run(...args);
+        listTxt += `file ${vid}\n`;
+      }
+    }
+
+    ffmpeg.FS('writeFile','list.txt', new TextEncoder().encode(listTxt));
+
+    statusEl.textContent = 'Concatenating…';
+    await ffmpeg.run('-f','concat','-safe','0','-i','list.txt','-c','copy','joined.mp4');
+
+    let finalName = 'joined_final.mp4';
+    if(audioFile){
+      statusEl.textContent = 'Muxing audio…';
+      ffmpeg.FS('writeFile','voiceover.mp3', await fetchFile(audioFile));
+      await ffmpeg.run('-i','joined.mp4','-i','voiceover.mp3','-shortest','-map','0:v:0','-map','1:a:0','-c:v','copy','-c:a','aac',finalName);
+    } else {
+      await ffmpeg.run('-i','joined.mp4','-c:v','copy',finalName);
+    }
+
+    // captions sidecar
+    const scriptText = scriptEl.value.trim();
+    if(scriptText){
+      const approx = estDuration || 30;
+      const vtt = vttFromScript(scriptText, approx);
+      ffmpeg.FS('writeFile','subtitles.vtt', new TextEncoder().encode(vtt));
+      const vttBlob = new Blob([vtt], {type:'text/vtt'});
+      const vttUrl = URL.createObjectURL(vttBlob);
+      const vttA = document.createElement('a'); vttA.href=vttUrl; vttA.download='subtitles.vtt'; vttA.textContent='Download captions (.vtt)'; vttA.className='dl';
+      outEl.append(vttA);
+    }
+
+    statusEl.textContent = 'Exporting…';
+    const data = ffmpeg.FS('readFile', finalName);
+    const url = URL.createObjectURL(new Blob([data.buffer], {type:'video/mp4'}));
+
+    const vid = document.createElement('video'); vid.src=url; vid.controls=true;
+    const a = document.createElement('a'); a.href=url; a.download='stitch.mp4'; a.textContent='Download video'; a.className='dl';
+    outEl.prepend(document.createElement('div')).className='muted';
+    outEl.append(document.createElement('div'));
+    outEl.prepend(vid);
+    outEl.append(a);
+
+    statusEl.textContent = 'Done';
+  }
+
+  renderBtn.addEventListener('click', ()=>{
+    // guard long jobs; recommend 2–3 min slices
+    const totalImgs = assets.filter(a=>a.type==='image').length;
+    const imgDur = parseFloat(imgdurEl.value||'3');
+    if(totalImgs*imgDur > 210){
+      if(!confirm('This may be long for in‑browser rendering. Proceed?')) return;
+    }
+    render().catch(err=>{ statusEl.textContent = 'Error: '+err.message; console.error(err); });
+  });
+})();
+</script>
+</body>
+</html>
